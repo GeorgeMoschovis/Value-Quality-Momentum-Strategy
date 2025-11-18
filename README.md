@@ -1,2 +1,2 @@
 # Value-Quality-Momentum-Strategy
-A basic Python quantitative strategy combining Value, Quality and Momentum Factors.
+A quantitative strategy combining Value, Quality and Momentum Factor, implemented with Python using data from yfinance.
