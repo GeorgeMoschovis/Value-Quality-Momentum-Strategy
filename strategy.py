@@ -163,10 +163,69 @@ def get_momentum_factors(price_data, rebalance_date):
 # 5. Ranking logic
 # --------------------------
 
-def rank_stocks(fundamental_data, momentum_data):
+def calculate_volatility(price_data, window=252):
+    """
+    Robust annualised volatility per ticker.
+
+    - price_data: DataFrame of prices indexed by date, columns = tickers
+    - window: lookback window for rolling vol (days)
+
+    Returns a pd.Series indexed by tickers. Any ticker with insufficient
+    history or all-NaN prices will get a large vol (999) so it is filtered out.
+    """
+    # Ensure a DataFrame (handle Series or single-column)
+    if isinstance(price_data, pd.Series):
+        price_data = price_data.to_frame()
+
+    # Compute returns; allow columns that are entirely NaN to stay as NaN
+    returns = price_data.pct_change()
+
+    # If there are no valid returns at all, return high vol for all tickers
+    if returns.dropna(how="all").empty:
+        return pd.Series(999.0, index=price_data.columns)
+
+    # Prepare output series
+    vols = pd.Series(index=price_data.columns, dtype=float)
+
+    # For each ticker compute vol robustly
+    for col in price_data.columns:
+        col_ret = returns[col].dropna()
+        if col_ret.empty:
+            vols[col] = 999.0
+            continue
+
+        # If we have at least `window` observations use the last `window`
+        if len(col_ret) >= window:
+            sample = col_ret.iloc[-window:]
+            vol = sample.std(ddof=0) * np.sqrt(252)   # population std (ddof=0) or ddof=1 as you prefer
+        else:
+            # fallback: use sample std of all available history
+            vol = col_ret.std(ddof=0) * np.sqrt(252)
+
+        # guard against NaN
+        vols[col] = float(vol) if pd.notna(vol) else 999.0
+
+    # Final safety: replace any remaining NaNs with large vol
+    vols = vols.fillna(999.0)
+
+    return vols
+
+
+def rank_stocks(fundamental_data, momentum_data, price_data, rebal_date):
     df = pd.concat([fundamental_data, momentum_data], axis=1).dropna()
 
     df = df[(df["Mom_12M"] > 0) & (df["Mom_3M"] > 0)]
+
+    # Add volatility filter (lower vol = safer stocks)
+    price_to_date = price_data.loc[:rebal_date]
+    vol = calculate_volatility(price_to_date)   # you'll pass price_data into rank_stocks
+
+    # Attach volatility
+    df["Vol"] = vol.reindex(df.index).fillna(999.0)
+    df["RiskAdj_Momentum"] = (df["Mom_12M"] + df["Mom_3M"]) / df["Vol"]
+
+
+    # Remove extremely volatile stocks
 
     if df.empty:
         return pd.Series(dtype=float)
@@ -176,9 +235,11 @@ def rank_stocks(fundamental_data, momentum_data):
     df["Rank_EV_EBITDA"] = df["EV/EBITDA"].rank()
     df["Rank_ROE"] = df["ROE"].rank(ascending=False)
     df["Rank_DE"] = df["Debt/Equity"].rank()
+    df["Rank_RiskAdjMom"] = df["RiskAdj_Momentum"].rank(ascending=False)
+
 
     df["Composite_Rank"] = df[
-        ["Rank_PE", "Rank_PB", "Rank_EV_EBITDA", "Rank_ROE", "Rank_DE"]
+        ["Rank_PE", "Rank_PB", "Rank_EV_EBITDA", "Rank_ROE", "Rank_DE", "Rank_RiskAdjMom"]
     ].mean(axis=1)
 
     return df.sort_values("Composite_Rank").index
@@ -203,7 +264,7 @@ def run_backtest(tickers, start_date, end_date):
         print(f"\n--- Rebalancing {rebal_date.date()} ---")
 
         momentum = get_momentum_factors(prices, rebal_date)
-        selected = rank_stocks(fundamentals, momentum)[:N_STOCKS_TO_LONG]
+        selected = rank_stocks(fundamentals, momentum, prices, rebal_date)[:N_STOCKS_TO_LONG]
 
         print("Selected stocks:", list(selected))
 
@@ -241,6 +302,27 @@ def calculate_metrics(returns):
 
     return annualized_return, annualized_vol, sharpe
 
+def calculate_max_drawdown(returns):
+    """
+    Returns the maximum drawdown of a return series.
+    """
+    cum = (1 + returns).cumprod()
+    peak = cum.cummax()
+    drawdown = (cum - peak) / peak
+    max_dd = drawdown.min()
+    return max_dd
+
+def calculate_var(returns, confidence=0.95):
+    """
+    Computes historical Value at Risk (VaR) at given confidence level.
+    VaR is the loss percentile.
+    """
+    return returns.quantile(1 - confidence)
+
+def calculate_cvar(returns, confidence=0.95):
+    cutoff = returns.quantile(1 - confidence)
+    return returns[returns <= cutoff].mean()
+
 # --------------------------
 # 8. Plot
 # --------------------------
@@ -248,6 +330,12 @@ def calculate_metrics(returns):
 def plot_performance(strategy_returns, benchmark_returns):
     strat_ann, strat_vol, strat_sharpe = calculate_metrics(strategy_returns)
     bench_ann, bench_vol, bench_sharpe = calculate_metrics(benchmark_returns)
+    max_dd = calculate_max_drawdown(strategy_returns)
+    bench_max_dd = calculate_max_drawdown(benchmark_returns)
+    var95 = calculate_var(strategy_returns, 0.95)
+    bench_var95 = calculate_var(benchmark_returns, 0.95)
+    cvar = calculate_cvar(strategy_returns, 0.95)
+    bench_cvar = calculate_cvar(benchmark_returns, 0.95)
 
     print("\n---------------------------")
     print("       Performance")
@@ -255,6 +343,9 @@ def plot_performance(strategy_returns, benchmark_returns):
     print(f"Annual Return:   {strat_ann:.2%} | Benchmark: {bench_ann:.2%}")
     print(f"Annual Vol:      {strat_vol:.2%} | Benchmark: {bench_vol:.2%}")
     print(f"Sharpe Ratio:    {strat_sharpe:.2f} | Benchmark: {bench_sharpe:.2f}")
+    print(f"Max Drawdown: {max_dd:.2%} | Benchmark: {bench_max_dd:.2%}")
+    print(f"95% VaR (daily): {var95:.2%} | Benchmark: {bench_var95:.2%}")
+    print(f"95% CVaR (Expected daily Shortfall): {cvar:.2%} | Benchmark: {bench_cvar:.2%}")
 
     plt.figure(figsize=(12, 7))
     plt.style.use("dark_background")
