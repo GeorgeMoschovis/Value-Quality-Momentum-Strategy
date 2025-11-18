@@ -356,6 +356,7 @@ def plot_performance(strategy_returns, benchmark_returns):
     plt.title("Backtest Performance")
     plt.legend()
     plt.grid(alpha=0.3)
+    plt.savefig("backtest_performance.png", dpi=300)
     plt.show()
 
 # --------------------------
