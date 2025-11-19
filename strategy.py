@@ -2,6 +2,8 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import matplotlib.ticker as mtick
 import warnings
 import json
 import os
@@ -64,10 +66,10 @@ TICKER_UNIVERSE = [
 
 BENCHMARK_TICKER = "^GSPC"
 
-START_DATE = "2015-01-01"
-END_DATE   = "2025-01-01"
+START_DATE = "2005-01-01"
+END_DATE   = "2025-01-01" # Minimum end date to allow for 1 year of data
 
-N_STOCKS_TO_LONG = 10
+N_STOCKS_TO_LONG = 20
 REBALANCE_FREQ = "6M" # Semi-annual rebalancing
 
 # --------------------------
@@ -250,7 +252,7 @@ def rank_stocks(fundamental_data, momentum_data, price_data, rebal_date):
 
 def run_backtest(tickers, start_date, end_date):
     print("Starting backtest...")
-
+    
     hist_start = (pd.to_datetime(start_date) - pd.DateOffset(years=1)).strftime("%Y-%m-%d")
 
     prices = load_or_download_prices(tickers, hist_start, end_date)
@@ -328,6 +330,15 @@ def calculate_cvar(returns, confidence=0.95):
 # --------------------------
 
 def plot_performance(strategy_returns, benchmark_returns):
+    # Ensure datetime index
+    strategy_returns.index = pd.to_datetime(strategy_returns.index)
+    benchmark_returns.index = pd.to_datetime(benchmark_returns.index)
+
+    # Align the two series on common dates
+    df = pd.concat([strategy_returns, benchmark_returns], axis=1).dropna()
+    strategy_returns = df.iloc[:, 0].astype(float)
+    benchmark_returns = df.iloc[:, 1].astype(float)
+
     strat_ann, strat_vol, strat_sharpe = calculate_metrics(strategy_returns)
     bench_ann, bench_vol, bench_sharpe = calculate_metrics(benchmark_returns)
     max_dd = calculate_max_drawdown(strategy_returns)
@@ -347,16 +358,53 @@ def plot_performance(strategy_returns, benchmark_returns):
     print(f"95% VaR (daily): {var95:.2%} | Benchmark: {bench_var95:.2%}")
     print(f"95% CVaR (Expected daily Shortfall): {cvar:.2%} | Benchmark: {bench_cvar:.2%}")
 
-    plt.figure(figsize=(12, 7))
+    # Rebase both series to 100 at the first common date
+    strat_cum_factor = (1 + strategy_returns).cumprod()
+    bench_cum_factor = (1 + benchmark_returns).cumprod()
+
+    strat_rebased = 100.0 * strat_cum_factor / strat_cum_factor.iloc[0]
+    bench_rebased = 100.0 * bench_cum_factor / bench_cum_factor.iloc[0]
+
+    # Create black figure/axes and ensure legend box is black
     plt.style.use("dark_background")
+    fig, ax = plt.subplots(figsize=(12, 7))
+    fig.patch.set_facecolor("black")
+    ax.set_facecolor("black")
 
-    plt.plot((1 + strategy_returns).cumprod(), label="Strategy", linewidth=2)
-    plt.plot((1 + benchmark_returns).cumprod(), label="S&P 500", linestyle="--", linewidth=2)
+    ax.plot(strat_rebased.index, strat_rebased.values, label="Strategy", linewidth=2, color="#1f77b4")
+    ax.plot(bench_rebased.index, bench_rebased.values, label="S&P 500", linestyle="--", linewidth=2, color="#ff7f0e")
 
-    plt.title("Backtest Performance")
-    plt.legend()
-    plt.grid(alpha=0.3)
-    plt.savefig("backtest_performance.png", dpi=300)
+    # X axis: show each year
+    ax.xaxis.set_major_locator(mdates.YearLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    ax.xaxis.set_minor_locator(mdates.MonthLocator(bymonth=(1,7)))
+
+    # Y axis: simple numeric formatter (base 100)
+    ax.yaxis.set_major_formatter(mtick.FuncFormatter(lambda x, pos: f"{x:,.0f}"))
+
+    ax.set_ylabel("Rebased Value (Base = 100)", color="white")
+    ax.set_xlabel("Year", color="white")
+
+    # Make ticks/labels white to match black background
+    ax.tick_params(colors="white", which="both")
+    ax.xaxis.label.set_color("white")
+    ax.yaxis.label.set_color("white")
+    ax.title.set_color("white")
+    for spine in ax.spines.values():
+        spine.set_color("white")
+
+    leg = ax.legend()
+    leg.get_frame().set_facecolor("black")
+    leg.get_frame().set_edgecolor("white")
+    leg.get_frame().set_alpha(0.95)
+    for txt in leg.get_texts():
+        txt.set_color("white")
+
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", color="white")
+    plt.title("Backtest Performance (Rebased to 100)", color="white")
+    ax.grid(alpha=0.3, color="gray")
+    plt.tight_layout()
+    plt.savefig("backtest_performance.png", dpi=300, facecolor=fig.get_facecolor())
     plt.show()
 
 # --------------------------
