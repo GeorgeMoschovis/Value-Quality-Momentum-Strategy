@@ -216,7 +216,7 @@ def calculate_volatility(price_data, window=252):
 def rank_stocks(fundamental_data, momentum_data, price_data, rebal_date):
     df = pd.concat([fundamental_data, momentum_data], axis=1).dropna()
 
-    df = df[(df["Mom_12M"] > 0) & (df["Mom_3M"] > 0)]
+    df = df[(df["Mom_12M"] > 0) & (df["Mom_3M"] > 0)] # Momentum filter
 
     # Add volatility filter (lower vol = safer stocks)
     price_to_date = price_data.loc[:rebal_date]
@@ -226,8 +226,6 @@ def rank_stocks(fundamental_data, momentum_data, price_data, rebal_date):
     df["Vol"] = vol.reindex(df.index).fillna(999.0)
     df["RiskAdj_Momentum"] = (df["Mom_12M"] + df["Mom_3M"]) / df["Vol"]
 
-
-    # Remove extremely volatile stocks
 
     if df.empty:
         return pd.Series(dtype=float)
